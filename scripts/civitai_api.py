@@ -24,6 +24,54 @@ import scripts.civitai_file_manage as _file
 gl.init()
 
 
+def _js_arg(value):
+    """A value as a JavaScript string literal, safe inside an HTML attribute."""
+    return escape(json.dumps(str(value)), quote=True)
+
+
+_UNSAFE_TAGS = {'script', 'style', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'form',
+                'input', 'button', 'textarea', 'select', 'link', 'meta', 'base', 'svg', 'math'}
+
+
+def _sanitize_html(fragment):
+    """Remove scripts, event handlers and javascript: links from HTML that
+    comes from Civitai (model descriptions) before it is shown in the WebUI."""
+    if not fragment:
+        return fragment
+    try:
+        from bs4 import BeautifulSoup  # type: ignore
+    except ImportError:
+        return escape(fragment)
+    soup = BeautifulSoup(fragment, 'html.parser')
+    for tag in soup.find_all(True):
+        if tag.name in _UNSAFE_TAGS:
+            tag.decompose()
+            continue
+        if tag.attrs is None:
+            continue
+        for attr in list(tag.attrs):
+            name = attr.lower()
+            value = tag.attrs[attr]
+            value = ' '.join(value) if isinstance(value, list) else str(value)
+            compact = re.sub(r'[\s\x00-\x1f]', '', value).lower()
+            if name.startswith('on') or name in ('srcdoc', 'formaction'):
+                del tag.attrs[attr]
+            elif name in ('href', 'src', 'action', 'xlink:href', 'poster') and compact.startswith(('javascript:', 'vbscript:', 'data:text', 'data:application')):
+                del tag.attrs[attr]
+            elif name == 'style' and ('expression(' in compact or 'javascript:' in compact):
+                del tag.attrs[attr]
+        if tag.name == 'a':
+            tag['target'] = '_blank'
+            tag['rel'] = 'noopener noreferrer'
+    return str(soup)
+
+
+def _first_dir(value):
+    if isinstance(value, (list, tuple)):
+        return value[0] if value else None
+    return value
+
+
 def contenttype_folder(content_type, desc=None, fromCheck=False, custom_folder=None):
     use_LORA = getattr(opts, "use_LORA", False)
     folder = None
@@ -42,8 +90,9 @@ def contenttype_folder(content_type, desc=None, fromCheck=False, custom_folder=N
         folder = os.path.join(main_models)
 
     if content_type == "Checkpoint":
-        if cmd_opts.ckpt_dir and not custom_folder:
-            folder = cmd_opts.ckpt_dir
+        _ckpt_dir = _first_dir(getattr(cmd_opts, 'ckpt_dirs', None)) or _first_dir(getattr(cmd_opts, 'ckpt_dir', None))
+        if _ckpt_dir and not custom_folder:
+            folder = _ckpt_dir
         else:
             folder = os.path.join(main_models, "Stable-diffusion")
 
@@ -54,8 +103,9 @@ def contenttype_folder(content_type, desc=None, fromCheck=False, custom_folder=N
             folder = os.path.join(main_models, "hypernetworks")
 
     elif content_type == "TextualInversion":
-        if cmd_opts.embeddings_dir and not custom_folder:
-            folder = cmd_opts.embeddings_dir
+        _emb_dir = getattr(cmd_opts, 'embeddings_dir', None)
+        if _emb_dir and not custom_folder:
+            folder = _emb_dir
         else:
             folder = os.path.join(main_data, "embeddings")
 
@@ -66,28 +116,32 @@ def contenttype_folder(content_type, desc=None, fromCheck=False, custom_folder=N
             folder = os.path.join(custom_folder, "aesthetic_embeddings")
 
     elif content_type == "LORA":
-        if cmd_opts.lora_dir and not custom_folder:
-            folder = cmd_opts.lora_dir
+        _lora_dir = _first_dir(getattr(cmd_opts, 'lora_dirs', None)) or _first_dir(getattr(cmd_opts, 'lora_dir', None))
+        if _lora_dir and not custom_folder:
+            folder = _lora_dir
         else:
-            folder = folder = os.path.join(main_models, "Lora")
+            folder = os.path.join(main_models, "Lora")
 
     elif content_type == "LoCon":
         folder = os.path.join(main_models, "LyCORIS")
         if use_LORA and not fromCheck:
-            if cmd_opts.lora_dir and not custom_folder:
-                folder = cmd_opts.lora_dir
+            _lora_dir = _first_dir(getattr(cmd_opts, 'lora_dirs', None)) or _first_dir(getattr(cmd_opts, 'lora_dir', None))
+            if _lora_dir and not custom_folder:
+                folder = _lora_dir
             else:
-                folder = folder = os.path.join(main_models, "Lora")
+                folder = os.path.join(main_models, "Lora")
 
     elif content_type == "DoRA":
-        if cmd_opts.lora_dir and not custom_folder:
-            folder = cmd_opts.lora_dir
+        _lora_dir = _first_dir(getattr(cmd_opts, 'lora_dirs', None)) or _first_dir(getattr(cmd_opts, 'lora_dir', None))
+        if _lora_dir and not custom_folder:
+            folder = _lora_dir
         else:
-            folder = folder = os.path.join(main_models, "Lora")
+            folder = os.path.join(main_models, "Lora")
 
     elif content_type == "VAE":
-        if cmd_opts.vae_dir and not custom_folder:
-            folder = cmd_opts.vae_dir
+        _vae_dir = _first_dir(getattr(cmd_opts, 'vae_dirs', None)) or _first_dir(getattr(cmd_opts, 'vae_dir', None))
+        if _vae_dir and not custom_folder:
+            folder = _vae_dir
         else:
             folder = os.path.join(main_models, "VAE")
 
@@ -102,28 +156,33 @@ def contenttype_folder(content_type, desc=None, fromCheck=False, custom_folder=N
 
     elif content_type == "Upscaler":
         if "SWINIR" in desc:
-            if cmd_opts.swinir_models_path and not custom_folder:
-                folder = cmd_opts.swinir_models_path
+            _dir = getattr(cmd_opts, 'swinir_models_path', None)
+            if _dir and not custom_folder:
+                folder = _dir
             else:
                 folder = os.path.join(main_models, "SwinIR")
         elif "REALESRGAN" in desc:
-            if cmd_opts.realesrgan_models_path and not custom_folder:
-                folder = cmd_opts.realesrgan_models_path
+            _dir = getattr(cmd_opts, 'realesrgan_models_path', None)
+            if _dir and not custom_folder:
+                folder = _dir
             else:
                 folder = os.path.join(main_models, "RealESRGAN")
         elif "GFPGAN" in desc:
-            if cmd_opts.gfpgan_models_path and not custom_folder:
-                folder = cmd_opts.gfpgan_models_path
+            _dir = getattr(cmd_opts, 'gfpgan_models_path', None)
+            if _dir and not custom_folder:
+                folder = _dir
             else:
                 folder = os.path.join(main_models, "GFPGAN")
         elif "BSRGAN" in desc:
-            if cmd_opts.bsrgan_models_path and not custom_folder:
-                folder = cmd_opts.bsrgan_models_path
+            _dir = getattr(cmd_opts, 'bsrgan_models_path', None)
+            if _dir and not custom_folder:
+                folder = _dir
             else:
                 folder = os.path.join(main_models, "BSRGAN")
         else:
-            if cmd_opts.esrgan_models_path and not custom_folder:
-                folder = cmd_opts.esrgan_models_path
+            _dir = getattr(cmd_opts, 'esrgan_models_path', None)
+            if _dir and not custom_folder:
+                folder = _dir
             else:
                 folder = os.path.join(main_models, "ESRGAN")
 
@@ -145,6 +204,99 @@ def contenttype_folder(content_type, desc=None, fromCheck=False, custom_folder=N
             folder = os.path.join(extensions_dir, "sd-dynamic-prompts", "wildcards")
 
     return folder
+
+
+def _version_date(v):
+    # The /models list endpoint only returns publishedAt (no createdAt).
+    # ISO-8601 UTC strings compare correctly as plain strings.
+    return v.get('publishedAt') or v.get('createdAt') or ''
+
+
+def _version_is_free(v):
+    # 'paidAccess' is set on versions sold with Buzz (permanent or timed)
+    if v.get('paidAccess'):
+        return False
+    if v.get('availability', 'Public') != 'Public':
+        return False
+    if v.get('earlyAccessConfig') or v.get('earlyAccessEndsAt'):
+        return False
+    deadline = v.get('earlyAccessDeadline')
+    if deadline and deadline > datetime.now(timezone.utc).isoformat():
+        return False
+    return True
+
+
+_usage_control_cache = {}
+
+
+def _fetch_usage_control(version_id):
+    # 'usageControl' is only returned by the single-version endpoint:
+    # "Download" = can be downloaded, "Generation" = only usable on the site.
+    if version_id in _usage_control_cache:
+        return _usage_control_cache[version_id]
+    value = None
+    try:
+        data = request_civit_api(f"https://civitai.red/api/v1/model-versions/{version_id}", True)
+        if isinstance(data, dict):
+            value = data.get('usageControl')
+    except Exception as e:
+        print(f"Could not check download availability of version {version_id}: {e}")
+    # Only cache real answers, so a temporary API failure is retried next time
+    if value is not None:
+        _usage_control_cache[version_id] = value
+    return value
+
+
+def prefetch_usage_control(version_ids):
+    """Fetch usageControl for many versions in parallel and cache the results."""
+    missing = [vid for vid in dict.fromkeys(version_ids) if vid is not None and vid not in _usage_control_cache]
+    if not missing:
+        return
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(_fetch_usage_control, missing))
+
+
+def _downloadable_only(versions):
+    """Drop versions that the creator restricted to on-site generation."""
+    if not versions:
+        return versions
+    prefetch_usage_control([v.get('id') for v in versions])
+    kept = []
+    for v in versions:
+        usage = _usage_control_cache.get(v.get('id'))
+        if usage is not None and usage != 'Download':
+            debug_print(f"Skipping version {v.get('id')} ({v.get('name')}): usageControl={usage}")
+            continue
+        kept.append(v)
+    return kept
+
+
+def newer_versions_for(model_versions, installed_ids, base_filter=None, check_usage=True):
+    """Versions that count as updates to what the user has installed:
+    published after the newest installed version, with a base model in the
+    user's filter (if any), freely downloadable (if paid ones are hidden) and
+    not restricted to on-site generation."""
+    hide_paid = getattr(opts, "hide_early_access", True)
+    installed = [v for v in model_versions if v.get('id') in installed_ids]
+    if not installed:
+        return []
+    if base_filter is None:
+        base_filter = getattr(gl, 'last_base_filter', None)
+    newest_installed = max(_version_date(i) for i in installed)
+    newer = []
+    for v in model_versions:
+        if v.get('id') in installed_ids:
+            continue
+        base = v.get('baseModel') or ''
+        if _version_date(v) <= newest_installed:
+            continue
+        if base_filter and not any(bf.lower() in base.lower() for bf in base_filter):
+            continue
+        if hide_paid and not _version_is_free(v):
+            continue
+        newer.append(v)
+    return _downloadable_only(newer) if check_usage else newer
 
 
 def model_list_html(json_data):
@@ -207,6 +359,30 @@ def model_list_html(json_data):
                         except Exception as e:
                             print(f"Error decoding JSON in {json_path}: {e}")
 
+    def _installed_version_ids(item):
+        installed = set()
+        for version in item.get('modelVersions') or []:
+            for file in version.get('files', []):
+                file_name = os.path.splitext(file['name'])[0]
+                file_extension = os.path.splitext(file['name'])[1]
+                file_name = f"{file_name}_{file['id']}{file_extension}"
+                file_sha256 = (file.get('hashes', {}).get('SHA256') or "").upper()
+                name_match = file_name.lower() in existing_files
+                sha256_match = bool(file_sha256) and file_sha256 in existing_files_sha256
+                if name_match or sha256_match:
+                    installed.add(version.get('id'))
+                    break
+        return installed
+
+    # Check all update candidates on this page for site-only versions at once,
+    # instead of one request per card.
+    candidate_ids = []
+    for item in json_data['items']:
+        ids = _installed_version_ids(item)
+        if ids:
+            candidate_ids += [v.get('id') for v in newer_versions_for(item['modelVersions'], ids, check_usage=False)]
+    prefetch_usage_control(candidate_ids)
+
     for item in json_data['items']:
         model_id = item.get('id')
         model_name = item.get('name')
@@ -247,38 +423,39 @@ def model_list_html(json_data):
                 image = item["modelVersions"][0]["images"][0]["url"]
                 if media_type == "video":
                     image = image.replace("width=", "transcode=true,width=")
-                    imgtag = f'<video class="video-bg" {playback} muted playsinline><source src="{image}" type="video/mp4"></video>'
+                    imgtag = f'<video class="video-bg" {playback} muted playsinline><source src="{escape(str(image))}" type="video/mp4"></video>'
                 else:
-                    imgtag = f'<img src="{image}"></img>'
+                    imgtag = f'<img src="{escape(str(image))}"></img>'
             else:
                 imgtag = '<img src="./file=html/card-no-preview.png"></img>'
 
             installstatus = None
+            installed_ids = _installed_version_ids(item)
 
-            for version in reversed(item['modelVersions']):
-                for file in version.get('files', []):
-                    file_name = os.path.splitext(file['name'])[0]
-                    file_extension = os.path.splitext(file['name'])[1]
-                    file_name = f"{file_name}_{file['id']}{file_extension}"
-                    file_sha256 = file.get('hashes', {}).get('SHA256', "").upper()
+            # Remember which version is the real update for this model, so
+            # "Download all selected" fetches it instead of the creator's
+            # first-listed version.
+            if not hasattr(gl, 'update_targets'):
+                gl.update_targets = {}
+            gl.update_targets.pop(int(model_id), None)
 
-                    # filename_check
-                    name_match = file_name.lower() in existing_files
-                    sha256_match = file_sha256 in existing_files_sha256
-                    if name_match or sha256_match:
-                        if version == item['modelVersions'][0]:
-                            installstatus = "civmodelcardinstalled"
-                        else:
-                            installstatus = "civmodelcardoutdated"
-            model_name_js = model_name.replace("'", "\\'")
-            model_string = escape(f"{model_name_js} ({model_id})")
-            model_card = f'<figure class="civmodelcard {nsfw} {installstatus}" base-model="{baseModel}" date="{date}" onclick="select_model(\'{model_string}\', event)">'
+            if installed_ids:
+                newer = newer_versions_for(item['modelVersions'], installed_ids)
+                if newer:
+                    installstatus = "civmodelcardoutdated"
+                    gl.update_targets[int(model_id)] = max(newer, key=_version_date).get('id')
+                else:
+                    installstatus = "civmodelcardinstalled"
+            raw_string = f"{model_name} ({model_id})"
+            model_arg = _js_arg(raw_string)
+            checkbox_id = escape(f"checkbox-{model_id}", quote=True)
+            model_card = f'<figure class="civmodelcard {nsfw} {installstatus or ""}" base-model="{escape(str(baseModel))}" date="{escape(str(date))}" onclick="select_model({model_arg}, event)">'
             if installstatus != "civmodelcardinstalled":
                 model_card += (
-                    f'<input type="checkbox" class="model-checkbox" id="checkbox-{model_string}" '
-                    f'onchange="multi_model_select(\'{model_string}\', \'{item["type"]}\', this.checked)" '
+                    f'<input type="checkbox" class="model-checkbox" id="{checkbox_id}" '
+                    f'onchange="multi_model_select({model_arg}, {_js_arg(item["type"])}, this.checked)" '
                     f'style="opacity: 0; position: absolute; top: 10px; right: 10px;">'
-                    f'<label for="checkbox-{model_string}" class="custom-checkbox"></label>'
+                    f'<label for="{checkbox_id}" class="custom-checkbox"></label>'
                 )
             if len(item["name"]) > 40:
                 display_name = item["name"][:40] + '...'
@@ -296,7 +473,7 @@ def model_list_html(json_data):
 
     if gl.sortNewest:
         for date, cards in sorted(sorted_models.items(), reverse=True):
-            HTML += f'<div class="date-section"><h4>{date}</h4><hr style="margin-bottom: 5px; margin-top: 5px;">'
+            HTML += f'<div class="date-section"><h4>{escape(str(date))}</h4><hr style="margin-bottom: 5px; margin-top: 5px;">'
             HTML += '<div class="card-row">'
             for card in cards:
                 HTML += card
@@ -307,11 +484,13 @@ def model_list_html(json_data):
 
 
 def create_api_url(content_type=None, sort_type=None, period_type=None, use_search_term=None, base_filter=None, only_liked=None, tile_count=None, search_term=None, nsfw=None, isNext=None):
-    base_url = "https://civitai.com/api/v1/models"
-    # version_url = "https://civitai.com/api/v1/model-versions"
+    base_url = "https://civitai.red/api/v1/models"
+    # version_url = "https://civitai.red/api/v1/model-versions"
 
     if isNext is not None:
         api_url = gl.json_data['metadata']['nextPage' if isNext else 'prevPage']
+        # Civitai's pagination URLs may still point to civitai.com — rewrite to civitai.red
+        api_url = api_url.replace("https://civitai.com/", "https://civitai.red/")
         debug_print(api_url)
         return api_url
 
@@ -322,7 +501,7 @@ def create_api_url(content_type=None, sort_type=None, period_type=None, use_sear
 
     if use_search_term != "None" and search_term:
         search_term = search_term.replace("\\", "\\\\").lower()
-        if "civitai.com" in search_term:
+        if "civitai.com" in search_term or "civitai.red" in search_term:
             model_number = re.search(r'models/(\d+)', search_term).group(1)
             params = {'ids': model_number}
 
@@ -337,7 +516,10 @@ def create_api_url(content_type=None, sort_type=None, period_type=None, use_sear
     if only_liked:
         params["favorites"] = "true"
 
-    params["nsfw"] = "true" if nsfw else "false"
+    if nsfw:
+        params["nsfw"] = "true"
+    else:
+        params["nsfw"] = "false"
 
     query_parts = []
     for key, value in params.items():
@@ -369,6 +551,7 @@ def convert_LORA_LoCon(content_type):
 
 
 def initial_model_page(content_type=None, sort_type=None, period_type=None, use_search_term=None, search_term=None, current_page=None, base_filter=None, only_liked=None, nsfw=None, tile_count=None, from_update_tab=False):
+    gl.last_base_filter = base_filter or None
     content_type = convert_LORA_LoCon(content_type)
     current_inputs = (content_type, sort_type, period_type, use_search_term, search_term, tile_count, base_filter, nsfw)
     if (gl.previous_inputs is not None and current_inputs != gl.previous_inputs) or not current_page:
@@ -435,6 +618,7 @@ def prev_model_page(content_type, sort_type, period_type, use_search_term, searc
 
 
 def next_model_page(content_type, sort_type, period_type, use_search_term, search_term, current_page, base_filter, only_liked, nsfw, tile_count, isNext=True):
+    gl.last_base_filter = base_filter or None
     content_type = convert_LORA_LoCon(content_type)
 
     current_inputs = (content_type, sort_type, period_type, use_search_term, search_term, tile_count, base_filter, nsfw)
@@ -586,7 +770,7 @@ def fetch_and_process_image(image_url):
     try:
         parsed_url = urllib.parse.urlparse(image_url)
         if parsed_url.scheme and parsed_url.netloc:
-            response = requests.get(image_url, proxies=proxies, verify=ssl)
+            response = requests.get(image_url, timeout=(30, 60), proxies=proxies, verify=ssl)
             if response.status_code == 200:
                 image = Image.open(BytesIO(response.content))
                 geninfo, _ = read_info_from_image(image)
@@ -664,9 +848,9 @@ def update_model_info(model_string=None, model_version=None, only_html=False, in
                 if not model_uploader:
                     model_uploader = 'User not found'
                     uploader_avatar = 'https://rawcdn.githack.com/gist/BlafKing/8d3f7a19e3f72cfddab46ae835037ee6/raw/296e81afbdd268200278beef478f3018b15936de/profile_placeholder.svg'
-                uploader_avatar = f'<div class="avatar"><img src={uploader_avatar}></div>'
+                uploader_avatar = f'<div class="avatar"><img src="{escape(str(uploader_avatar))}"></div>'
                 tags = item.get('tags', "")
-                model_desc = item.get('description', "")
+                model_desc = _sanitize_html(item.get('description', "") or "")
                 if model_desc:
                     model_desc = model_desc.replace('<img', '<img style="max-width: -webkit-fill-available;"')
                     model_desc = model_desc.replace('<code>', '<code style="text-wrap: wrap">')
@@ -743,10 +927,10 @@ def update_model_info(model_string=None, model_version=None, only_html=False, in
                                 model_folder = os.path.join(contenttype_folder("TextualInversion"))
 
                 model_url = selected_version.get('downloadUrl', '')
-                model_main_url = f"https://civitai.com/models/{item['id']}"
+                model_main_url = f"https://civitai.red/models/{item['id']}"
                 img_html = '<div class="sampleimgs"><input type="radio" name="zoomRadio" id="resetZoom" class="zoom-radio" checked>'
 
-                url = f"https://civitai.com/api/v1/model-versions/{selected_version['id']}"
+                url = f"https://civitai.red/api/v1/model-versions/{selected_version['id']}"
                 api_version = request_civit_api(url)
 
                 if not isinstance(api_version, dict) or 'images' not in api_version:
@@ -779,11 +963,11 @@ def update_model_info(model_string=None, model_version=None, only_html=False, in
                     image_url = re.sub(r'/width=\d+', f'/width={pic["width"]}', pic["url"])
                     if pic['type'] == "video":
                         image_url = image_url.replace("width=", "transcode=true,width=")
-                        img_html += f'<video data-sampleimg="true" {playback} muted playsinline><source src="{image_url}" type="video/mp4"></video>'
+                        img_html += f'<video data-sampleimg="true" {playback} muted playsinline><source src="{escape(str(image_url))}" type="video/mp4"></video>'
                         meta_button = False
                         prompt_dict = {}
                     else:
-                        img_html += f'<img data-sampleimg="true" src="{image_url}">'
+                        img_html += f'<img data-sampleimg="true" src="{escape(str(image_url))}">'
 
                     img_html += '''
                         </label>
@@ -793,7 +977,7 @@ def update_model_info(model_string=None, model_version=None, only_html=False, in
                     if meta_button:
                         img_html += f'''
                             <div class="civitai_txt2img" style="margin-top:30px;margin-bottom:30px;">
-                            <label onclick='sendImgUrl("{escape(image_url)}")' class="civitai-txt2img-btn" style="max-width:fit-content;cursor:pointer;">Send to txt2img</label>
+                            <label onclick="sendImgUrl({_js_arg(image_url)})" class="civitai-txt2img-btn" style="max-width:fit-content;cursor:pointer;">Send to txt2img</label>
                             </div></div>
                         '''
                     else:
@@ -868,23 +1052,23 @@ def update_model_info(model_string=None, model_version=None, only_html=False, in
                 if not creator or model_uploader == 'User not found':
                     uploader = f'<h3 class="model-uploader"><span>{escape(str(model_uploader))}</span>{uploader_avatar}</h3>'
                 else:
-                    uploader = f'<h3 class="model-uploader">Uploaded by <a href="https://civitai.com/user/{escape(str(model_uploader))}" target="_blank">{escape(str(model_uploader))}</a>{uploader_avatar}</h3>'
+                    uploader = f'<h3 class="model-uploader">Uploaded by <a href="https://civitai.red/user/{escape(str(model_uploader))}" target="_blank">{escape(str(model_uploader))}</a>{uploader_avatar}</h3>'
                 output_html = f'''
                 <div class="model-block">
-                    <h2><a href={model_main_url} target="_blank" id="model_header">{escape(str(model_name))}</a></h2>
+                    <h2><a href="{escape(str(model_main_url))}" target="_blank" id="model_header">{escape(str(model_name))}</a></h2>
                     {uploader}
                     <div class="civitai-version-info" style="display:flex; flex-wrap:wrap; justify-content:space-between;">
                         <dl id="info_block">
                             <dt>Version</dt>
-                            <dd><a href="{version_url}" target="_blank">{escape(str(model_version))}</a></dd>
+                            <dd><a href="{escape(str(version_url))}" target="_blank">{escape(str(model_version))}</a></dd>
                             <dt>Base Model</dt>
                             <dd>{escape(str(output_basemodel))}</dd>
                             <dt>Published</dt>
-                            <dd>{model_date_published}</dd>
+                            <dd>{escape(str(model_date_published))}</dd>
                             <dt>Availability</dt>
-                            <dd>{model_availability}</dd>
+                            <dd>{escape(str(model_availability))}</dd>
                             {"<dt>Real Person</dt>" if poi else ''}
-                            {f'<dd>This resource is intended to reproduce the likeness of a real person. Out of respect for this individual and in accordance with our <a href="https://civitai.com/content/rules/real-people" target="_blank">Content Rules</a>, only work-safe images and non-commercial use is permitted.</dd>' if poi else ''}
+                            {f'<dd>This resource is intended to reproduce the likeness of a real person. Out of respect for this individual and in accordance with our <a href="https://civitai.red/content/rules/real-people" target="_blank">Content Rules</a>, only work-safe images and non-commercial use is permitted.</dd>' if poi else ''}
                             <dt>CivitAI Tags</dt>
                             <dd>
                                 <div class="civitai-tags-container">
@@ -892,7 +1076,7 @@ def update_model_info(model_string=None, model_version=None, only_html=False, in
                                 </div>
                             </dd>
                             {"<dt>Download Link</dt>" if model_url else ''}
-                            {f'<dd><a href={model_url} target="_blank">{model_url}</a></dd>' if model_url else ''}
+                            {f'<dd><a href="{escape(str(model_url))}" target="_blank">{escape(str(model_url))}</a></dd>' if model_url else ''}
                         </dl>
                         <div style="align-self:center; min-width:320px;">
                             <div>
@@ -1151,7 +1335,7 @@ def get_proxies():
     if custom_proxy:
         if not disable_ssl:
             if cabundle_path:
-                ssl = os.path(cabundle_path)
+                ssl = cabundle_path
         else:
             ssl = False
         proxies = {
@@ -1170,7 +1354,7 @@ def get_headers(referer=None, no_api=None):
         "Content-Type": "application/json"
     }
     if referer:
-        headers['Referer'] = f"https://civitai.com/models/{referer}"
+        headers['Referer'] = f"https://civitai.red/models/{referer}"
     if api_key and not no_api:
         headers['Authorization'] = f'Bearer {api_key}'
 
@@ -1184,8 +1368,13 @@ def request_civit_api(api_url=None, skip_error_check=False):
         response = requests.get(api_url, headers=headers, timeout=(60, 30), proxies=proxies, verify=ssl)
         if skip_error_check:
             response.encoding = "utf-8"
-            data = json.loads(response.text)
-            return data
+            if not response.text.strip():
+                return None
+            try:
+                return json.loads(response.text)
+            except ValueError:
+                print(f"Unexpected non-JSON response from {api_url} (HTTP {response.status_code})")
+                return None
         response.raise_for_status()
     except requests.exceptions.Timeout as e:
         print(f"The request timed out. Please try again later. {e}")

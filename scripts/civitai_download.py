@@ -1,3 +1,6 @@
+import urllib.parse
+import secrets
+from html import escape
 import requests  # type: ignore
 import gradio as gr
 import time
@@ -34,7 +37,64 @@ def random_number(prev=None):
 
 
 gl.init()
-rpc_secret = "R7T5P2Q9K6"
+
+# The Aria2 RPC secret is random per start and shared through a file, because
+# the WebUI can import this module more than once per launch.
+_rpc_secret_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".aria2_rpc_secret")
+
+
+def _rpc_secret():
+    try:
+        with open(_rpc_secret_file, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _new_rpc_secret():
+    secret = secrets.token_hex(16)
+    try:
+        with open(_rpc_secret_file, "w", encoding="utf-8") as f:
+            f.write(secret)
+    except OSError as e:
+        print(f"Could not save the Aria2 RPC secret: {e}")
+    return secret
+
+
+def _stop_aria2():
+    # Stop Aria2 instances started from this extension's own binary,
+    # including ones left running by a previous WebUI session.
+    try:
+        import psutil  # type: ignore
+        target = os.path.normcase(os.path.abspath(aria2))
+        found = []
+        for proc in psutil.process_iter(['exe']):
+            try:
+                exe = proc.info.get('exe')
+                if exe and os.path.normcase(os.path.abspath(exe)) == target:
+                    proc.kill()
+                    found.append(proc)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        if found:
+            psutil.wait_procs(found, timeout=5)
+        return
+    except ImportError:
+        pass
+    except Exception as e:
+        print(f"Failed to stop Aria2 RPC : {e}")
+        return
+    try:
+        if os_type == 'Linux':
+            env = os.environ.copy()
+            env['PATH'] = '/usr/bin:' + env['PATH']
+            subprocess.Popen(["pkill", "-f", aria2], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.Popen(stop_rpc, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1)
+    except Exception as e:
+        print(f"Failed to stop Aria2 RPC : {e}")
+
 try:
     queue = not cmd_opts.no_gradio_queue
 except AttributeError:
@@ -46,31 +106,31 @@ except (IndexError, KeyError, TypeError):
 def start_aria2_rpc():
     start_file = os.path.join(aria2path, '_')
     running_file = os.path.join(aria2path, 'running')
-    null = open(os.devnull, 'w')
 
-    if os.path.exists(running_file):
-        try:
-            if os_type == 'Linux':
-                env = os.environ.copy()
-                env['PATH'] = '/usr/bin:' + env['PATH']
-                subprocess.Popen("pkill aria2", shell=True, env=env)
-            else:
-                subprocess.Popen(stop_rpc, stdout=null, stderr=null)
-            time.sleep(1)
-        except Exception as e:
-            print(f"Failed to stop Aria2 RPC : {e}")
-    else:
+    if not os.path.exists(running_file):
         if os.path.exists(start_file):
+            # Second import in the same launch: Aria2 is already being started
             os.rename(start_file, running_file)
             return
-        else:
-            with open(start_file, 'w', encoding="utf-8"):
-                pass
+        with open(start_file, 'w', encoding="utf-8"):
+            pass
+
+    # Replace any Aria2 left over from a reload or a previous session, so the
+    # current secret and security flags always apply.
+    _stop_aria2()
 
     try:
         show_log = getattr(opts, "show_log", False)
         aria2_flags = getattr(opts, "aria2_flags", "")
-        cmd = f'"{aria2}" --enable-rpc --rpc-listen-all --rpc-listen-port=24000 --rpc-secret {rpc_secret} --check-certificate=false --ca-certificate=" " --file-allocation=none {aria2_flags}'
+        secret = _new_rpc_secret()
+        ca_flag = ""
+        try:
+            import certifi  # type: ignore
+            ca_flag = f'--ca-certificate="{certifi.where()}"'
+        except ImportError:
+            pass
+        # RPC listens on localhost only and TLS certificates are verified.
+        cmd = f'"{aria2}" --enable-rpc --rpc-listen-port=24000 --rpc-secret {secret} --check-certificate=true {ca_flag} --file-allocation=none {aria2_flags}'
         subprocess_args = {'shell': True}
         if not show_log:
             subprocess_args.update({'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL})
@@ -183,7 +243,11 @@ def selected_to_queue(model_list, subfolder, download_start, create_json, curren
         desc = item.get('description', '')
         content_type = item.get('type', '')
 
-        version = item.get('modelVersions', [{}])[0]
+        versions = item.get('modelVersions') or [{}]
+        # If this model has a known update, download that version; otherwise
+        # fall back to the creator's first-listed version.
+        target_id = getattr(gl, 'update_targets', {}).get(int(model_id))
+        version = next((v for v in versions if v.get('id') == target_id), versions[0])
         version_name = version.get('name', '')
         version_id = version.get('id', '')
         files = version.get('files', [])
@@ -383,7 +447,9 @@ def get_download_link(url, model_id):
     headers = _api.get_headers(model_id)
     proxies, ssl = _api.get_proxies()
 
-    response = requests.get(url, headers=headers, allow_redirects=False, proxies=proxies, verify=ssl)
+    response = requests.get(url, headers=headers, allow_redirects=False, timeout=(30, 60), proxies=proxies, verify=ssl)
+    location = response.headers.get("Location", "")
+    print(f"Download link check for {url}: HTTP {response.status_code}, redirects to host: {urllib.parse.urlparse(location).netloc if location else 'none'}")
 
     if 300 <= response.status_code <= 308:
         if "login?returnUrl" in response.text and "reason=download-auth" in response.text:
@@ -439,11 +505,11 @@ def download_file(url, file_path, install_path, model_id, progress=gr.Progress()
             "jsonrpc": "2.0",
             "id": "1",
             "method": "aria2.addUri",
-            "params": ["token:" + rpc_secret, [download_link], options]
+            "params": ["token:" + _rpc_secret(), [download_link], options]
         })
 
         try:
-            response = requests.post(aria2_rpc_url, data=payload)
+            response = requests.post(aria2_rpc_url, data=payload, timeout=10)
             data = json.loads(response.text)
             if 'result' not in data:
                 raise ValueError(f'Failed to start download: {data}')
@@ -459,9 +525,9 @@ def download_file(url, file_path, install_path, model_id, progress=gr.Progress()
                     "jsonrpc": "2.0",
                     "id": "1",
                     "method": "aria2.remove",
-                    "params": ["token:" + rpc_secret, gid]
+                    "params": ["token:" + _rpc_secret(), gid]
                 })
-                requests.post(aria2_rpc_url, data=payload)
+                requests.post(aria2_rpc_url, data=payload, timeout=10)
                 if progress is not None:
                     progress(0, desc="Download cancelled.")
                 return
@@ -471,10 +537,10 @@ def download_file(url, file_path, install_path, model_id, progress=gr.Progress()
                     "jsonrpc": "2.0",
                     "id": "1",
                     "method": "aria2.tellStatus",
-                    "params": ["token:" + rpc_secret, gid]
+                    "params": ["token:" + _rpc_secret(), gid]
                 })
 
-                response = requests.post(aria2_rpc_url, data=payload)
+                response = requests.post(aria2_rpc_url, data=payload, timeout=10)
                 status_info = json.loads(response.text)['result']
 
                 total_length = int(status_info['totalLength'])
@@ -500,6 +566,7 @@ def download_file(url, file_path, install_path, model_id, progress=gr.Progress()
                     return
 
                 if status_info['status'] == 'error':
+                    print(f'Aria2 failed to download "{file_name}": error {status_info.get("errorCode")} - {status_info.get("errorMessage")}')
                     if progress is not None:
                         progress(0, desc=f"Encountered an error during download of: \"{file_name}\" Please try again.")
                     gl.download_fail = True
@@ -516,7 +583,8 @@ def download_file(url, file_path, install_path, model_id, progress=gr.Progress()
                     gl.download_fail = True
                     return
                 time.sleep(5)
-    except (IndexError, KeyError, TypeError):
+    except (IndexError, KeyError, TypeError) as e:
+        print(f"Download error ({type(e).__name__}): {e}")
         if progress is not None:
             progress(0, desc=f"Encountered an error during download of: \"{file_name}\" Please try again.")
         gl.download_fail = True
@@ -607,7 +675,8 @@ def download_file_old(url, file_path, model_id, progress=gr.Progress() if queue 
                                 gl.download_fail = True
                                 return
                             total_size = int(response.headers.get("Content-Length", 0))
-                        except (IndexError, KeyError, TypeError):
+                        except (IndexError, KeyError, TypeError) as e:
+                            print(f"Download error ({type(e).__name__}): {e}")
                             raise TimeOutFunction("Timed Out")
 
                         if total_size == 0:
@@ -671,7 +740,8 @@ def download_file_old(url, file_path, model_id, progress=gr.Progress() if queue 
                 gl.download_fail = True
                 if os.path.exists(file_path):
                     os.remove(file_path)
-    except (IndexError, KeyError, TypeError):
+    except (IndexError, KeyError, TypeError) as e:
+        print(f"Download error ({type(e).__name__}): {e}")
         if progress is not None:
             progress(0, desc=f"Encountered an error during download of: {file_name_display}, please try again.")
         gl.download_fail = True
@@ -717,6 +787,19 @@ def download_create_thread(download_finish, queue_trigger, progress=gr_progress_
     else:
         thread.join()
 
+    # If Aria2 failed (not cancelled, not a missing API key), retry once with
+    # the standard downloader instead of discarding the file.
+    if use_aria2 and os_type != 'Darwin' and gl.download_fail is True and not gl.cancel_status:
+        print(f'Retrying "{item["model_filename"]}" with the standard downloader...')
+        gl.download_fail = False
+        gl.isDownloading = True
+        thread = threading.Thread(target=download_file_old, args=(item['dl_url'], path_to_new_file, item['model_id'], progress))
+        thread.start()
+        if progress is not None and hasattr(progress, "join"):
+            progress.join(thread)
+        else:
+            thread.join()
+
     if not gl.cancel_status or gl.download_fail:
         if os.path.exists(path_to_new_file):
             unpackList = []
@@ -725,6 +808,16 @@ def download_create_thread(download_finish, queue_trigger, progress=gr_progress_
                     if path_to_new_file.endswith('.zip'):
                         directory = Path(os.path.dirname(path_to_new_file))
                         zip_handler = ZipHandler(path_to_new_file)
+
+                        if zip_handler.is_encrypted():
+                            zip_handler.zip_ref.close()
+                            raise ValueError("the zip file is password protected")
+                        dest_root = os.path.realpath(directory)
+                        for _, decoded_name in zip_handler.name_map.items():
+                            target = os.path.realpath(os.path.join(dest_root, decoded_name))
+                            if os.path.isabs(decoded_name) or os.path.commonpath([dest_root, target]) != dest_root:
+                                zip_handler.zip_ref.close()
+                                raise ValueError(f"unsafe path inside the zip file: {decoded_name}")
 
                         for _, decoded_name in zip_handler.name_map.items():
                             unpackList.append(decoded_name)
@@ -750,12 +843,20 @@ def download_create_thread(download_finish, queue_trigger, progress=gr_progress_
     base_name_preview = base_name + '.preview'
 
     if gl.download_fail:
-        for root, dirs, files in os.walk(item['install_path'], followlinks=True):
-            for file in files:
+        # Only remove what this download created, in its own folder. Files with
+        # the same name in other folders belong to other models.
+        install_dir = item['install_path']
+        aria2_control = item['model_filename'] + ".aria2"
+        if os.path.isdir(install_dir):
+            for file in os.listdir(install_dir):
                 file_base_name = os.path.splitext(file)[0]
-                if file_base_name == base_name or file_base_name == base_name_preview:
-                    path_file = os.path.join(root, file)
-                    os.remove(path_file)
+                if file_base_name in (base_name, base_name_preview) or file == aria2_control:
+                    path_file = os.path.join(install_dir, file)
+                    if os.path.isfile(path_file):
+                        try:
+                            os.remove(path_file)
+                        except OSError as e:
+                            print(f"Could not remove {path_file}: {e}")
 
         if gl.cancel_status:
             print(f'Cancelled download of "{item["model_filename"]}"')
@@ -772,7 +873,7 @@ def download_create_thread(download_finish, queue_trigger, progress=gr_progress_
     if len(gl.download_queue) != 0:
         gl.download_queue.pop(0)
     gl.isDownloading = False
-    time.sleep(2)
+    time.sleep(0.5)
 
     if len(gl.download_queue) == 0:
         finish_nr = random_number(download_finish)
@@ -824,11 +925,11 @@ def download_manager_html(current_html):
         if not item['dl_id'] in existing_item_ids:
             download_item = f'''
                 <div class="civitai_dl_item" dl_id="{item['dl_id']}" style="display: flex; font-size: var(--section-header-text-size);">
-                <div class="dl_name" style="{get_style(1, False)}"><span title="{item['model_name']}">{item['model_name']}</span></div>
-                <div class="dl_ver" style="{get_style(0.75, True)}"><span title="{item['version_name']}">{item['version_name']}</span></div>
-                <div class="dl_path" style="{get_style(1.5, True)}"><span title="{item['install_path']}">{item['install_path']}</span></div>
+                <div class="dl_name" style="{get_style(1, False)}"><span title="{escape(str(item['model_name']))}">{escape(str(item['model_name']))}</span></div>
+                <div class="dl_ver" style="{get_style(0.75, True)}"><span title="{escape(str(item['version_name']))}">{escape(str(item['version_name']))}</span></div>
+                <div class="dl_path" style="{get_style(1.5, True)}"><span title="{escape(str(item['install_path']))}">{escape(str(item['install_path']))}</span></div>
                 <div class="dl_stat" style="{get_style(1.5, True)}"><div class="dl_progress_bar" style="width:0%">In queue...</div></div>
-                <div class="dl_action_btn" style="{get_style(0.3, True)}text-align: center;"><span onclick="removeDlItem({item['dl_id']}, this)" class="civitai-btn-text" style="font-size: larger;">Remove</span></div>
+                <div class="dl_action_btn" style="{get_style(0.3, True)}text-align: center;"><span onclick="removeDlItem({int(item['dl_id'])}, this)" class="civitai-btn-text" style="font-size: larger;">Remove</span></div>
                 </div>
                 '''
             html = html + download_item

@@ -4,3 +4,6 @@ running
 venv
 .mypy_cache
 *civitai_subfolders.json
+scripts/.aria2_rpc_secret
+scripts/civitai_browser.log
+*.bak

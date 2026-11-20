@@ -13,6 +13,7 @@ import hashlib
 import base64
 from PIL import Image
 from pathlib import Path
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 from modules.shared import cmd_opts, opts  # type: ignore
 from scripts.civitai_global import print, debug_print
@@ -96,13 +97,18 @@ def delete_model(delete_finish=None, model_filename=None, model_string=None, lis
 
                     if file_sha256 == sha256_upper:
                         unpack_list = data.get('unpackList', [])
+                        root_real = os.path.realpath(root)
                         for unpacked_file in unpack_list:
                             unpacked_file_path = os.path.join(root, unpacked_file)
+                            unpacked_real = os.path.realpath(unpacked_file_path)
+                            if os.path.isabs(str(unpacked_file)) or os.path.commonpath([root_real, unpacked_real]) != root_real:
+                                print(f"Skipping unsafe path in unpackList: {unpacked_file}")
+                                continue
                             if os.path.isfile(unpacked_file_path):
                                 try:
                                     send2trash(unpacked_file_path)
                                     print(f"File moved to trash based on unpackList: {unpacked_file_path}")
-                                except (IndexError, KeyError, TypeError):
+                                except Exception:
                                     os.remove(unpacked_file_path)
                                     print(f"File deleted based on unpackList: {unpacked_file_path}")
 
@@ -111,7 +117,7 @@ def delete_model(delete_finish=None, model_filename=None, model_string=None, lis
                             try:
                                 send2trash(file_path)
                                 print(f"Model moved to trash based on SHA-256: {file_path}")
-                            except (IndexError, KeyError, TypeError):
+                            except Exception:
                                 os.remove(file_path)
                                 print(f"Model deleted based on SHA-256: {file_path}")
                             delete_associated_files(root, base_name)
@@ -130,7 +136,7 @@ def delete_model(delete_finish=None, model_filename=None, model_string=None, lis
                         try:
                             send2trash(path_file)
                             print(f"Model moved to trash based on filename: {path_file}")
-                        except (IndexError, KeyError, TypeError):
+                        except Exception:
                             os.remove(path_file)
                             print(f"Model deleted based on filename: {path_file}")
                         delete_associated_files(root, current_file_name)
@@ -157,7 +163,7 @@ def delete_associated_files(directory, base_name):
             try:
                 send2trash(path_to_delete)
                 print(f"Associated file moved to trash: {path_to_delete}")
-            except (IndexError, KeyError, TypeError):
+            except Exception:
                 os.remove(path_to_delete)
                 print(f"Associated file deleted: {path_to_delete}")
 
@@ -194,7 +200,7 @@ def save_preview(file_path, api_response, overwrite_toggle=False, sha256=None):
                         if image["type"] == "image":
                             url_with_width = re.sub(r'/width=\d+', f'/width={image["width"]}', image["url"])
 
-                            response = requests.get(url_with_width, proxies=proxies, verify=ssl)
+                            response = requests.get(url_with_width, timeout=(30, 60), proxies=proxies, verify=ssl)
                             if response.status_code == 200:
                                 with open(image_path, 'wb') as img_file:
                                     img_file.write(response.content)
@@ -243,8 +249,11 @@ def save_images(preview_html, model_filename, install_path, sub_folder, api_resp
         filename = f'{name}_{i}.jpg'
         if not os.path.exists(f'{image_path}/{filename}') or overwrite_toggle:
             img_url = urllib.parse.quote(img_url, safe=':/=')
+            if not img_url.lower().startswith(('https://', 'http://')):
+                print(f"Skipping image with unsupported URL: {img_url}")
+                continue
             try:
-                with urllib.request.urlopen(img_url) as url:
+                with urllib.request.urlopen(img_url, timeout=60) as url:
                     with open(os.path.join(image_path, filename), 'wb') as f:
                         f.write(url.read())
                         print(f"Downloaded {filename}")
@@ -427,7 +436,7 @@ def model_from_sent(model_name, content_type):
             output_html = _api.api_error_msg("offline")
             modelID_failed = True
         if not modelID_failed:
-            json_data = _api.request_civit_api(f"https://civitai.com/api/v1/models?ids={modelID}&nsfw=true")
+            json_data = _api.request_civit_api(f"https://civitai.red/api/v1/models?ids={modelID}&nsfw=true")
         else:
             json_data = None
 
@@ -518,7 +527,7 @@ def send_to_browser(model_name, content_type, click_first_item):
             modelID_failed = True
 
         if not modelID_failed:
-            gl.json_data = _api.request_civit_api(f"https://civitai.com/api/v1/models?ids={modelID}&nsfw=true")
+            gl.json_data = _api.request_civit_api(f"https://civitai.red/api/v1/models?ids={modelID}&nsfw=true")
             output_html = _api.model_list_html(gl.json_data)
 
             number = _download.random_number(click_first_item)
@@ -804,9 +813,14 @@ def get_models(file_path, gen_hash=None):
             sha256 = gen_sha256(file_path)
 
         if sha256:
-            by_hash = f"https://civitai.com/api/v1/model-versions/by-hash/{sha256}"
+            by_hash = f"https://civitai.red/api/v1/model-versions/by-hash/{sha256}"
         else:
-            return (modelId, modelVersionId) if modelId else (None, None)
+            # No hash available — can't verify by hash.
+            # If modelVersionId is a real integer ID, pass through so version_match
+            # can use it as a fallback. If it's an error string, skip entirely.
+            if modelVersionId and str(modelVersionId).isdigit():
+                return (modelId, modelVersionId) if modelId else (None, None)
+            return (None, None)
 
     proxies, ssl = _api.get_proxies()
     try:
@@ -860,56 +874,54 @@ def get_models(file_path, gen_hash=None):
         return None, None
 
 
-def version_match(file_paths, api_response):
+def version_match(file_paths, api_response, base_filter=None):
     updated_models = []
     outdated_models = []
-    sha256_hashes = {}
+    sha256_hashes = set()
+    version_ids = set()
+
+    # Build sets of local SHA256 hashes and version IDs from all JSON sidecar files
     for file_path in file_paths:
         json_path = f"{os.path.splitext(file_path)[0]}.json"
         if os.path.exists(json_path):
-            with open(json_path, 'r', encoding="utf-8") as f:
-                try:
+            try:
+                with open(json_path, 'r', encoding="utf-8") as f:
                     json_data = json.load(f)
                     sha256 = json_data.get('sha256')
                     if sha256:
-                        sha256_hashes[os.path.basename(file_path)] = sha256.upper()
-                except Exception as e:
-                    print(f"Failed to open {json_path}: {e}")
+                        sha256_hashes.add(sha256.upper())
+                    version_id = json_data.get('modelVersionId')
+                    # Only use version ID as fallback if it's a real integer ID, not an error string
+                    if version_id and str(version_id).isdigit():
+                        version_ids.add(int(version_id))
+            except Exception as e:
+                print(f"Failed to open {json_path}: {e}")
 
-    file_names_and_hashes = set()
-    for file_path in file_paths:
-        file_name = os.path.basename(file_path)
-        file_name_without_ext = os.path.splitext(file_name)[0]
-        file_sha256 = sha256_hashes.get(file_name, "")
-        if file_sha256:
-            file_sha256 = file_sha256.upper()
-        file_names_and_hashes.add((file_name_without_ext, file_sha256))
+    def is_installed(v):
+        for file_entry in v.get('files', []):
+            entry_sha256 = (file_entry.get('hashes', {}) or {}).get('SHA256') or ""
+            if entry_sha256 and entry_sha256.upper() in sha256_hashes:
+                return True
+        return v.get('id') in version_ids
 
+    installed_by_model = []
+    candidate_ids = []
     for item in api_response.get('items', []):
-        model_versions = item.get('modelVersions', [])
-
-        if not model_versions:
+        model_versions = item.get('modelVersions', []) or []
+        installed_ids = {v.get('id') for v in model_versions if is_installed(v)}
+        if not installed_ids:
             continue
+        installed_by_model.append((item, model_versions, installed_ids))
+        candidate_ids += [v.get('id') for v in _api.newer_versions_for(model_versions, installed_ids, base_filter, check_usage=False)]
 
-        for idx, model_version in enumerate(model_versions):
-            files = model_version.get('files', [])
-            match_found = False
-            for file_entry in files:
-                entry_name = os.path.splitext(file_entry.get('name', ''))[0]
-                entry_sha256 = file_entry.get('hashes', {}).get('SHA256', "")
-                if entry_sha256:
-                    entry_sha256 = entry_sha256.upper()
+    # One parallel batch for the site-only check, instead of one request per model
+    _api.prefetch_usage_control(candidate_ids)
 
-                if (entry_name, entry_sha256) in file_names_and_hashes:
-                    match_found = True
-                    break
-
-            if match_found:
-                if idx == 0:
-                    updated_models.append((f"&ids={item['id']}", item["name"]))
-                else:
-                    outdated_models.append((f"&ids={item['id']}", item["name"]))
-                break
+    for item, model_versions, installed_ids in installed_by_model:
+        if _api.newer_versions_for(model_versions, installed_ids, base_filter):
+            outdated_models.append((str(item['id']), item["name"]))
+        else:
+            updated_models.append((str(item['id']), item["name"]))
 
     return updated_models, outdated_models
 
@@ -942,7 +954,7 @@ def get_save_path_and_name(install_path, file_name, api_response, sub_folder=Non
     return save_path, name
 
 
-def file_scan(folders, ver_finish, tag_finish, installed_finish, preview_finish, overwrite_toggle, tile_count, gen_hash, create_html, progress=gr.Progress() if queue else None):
+def file_scan(folders, ver_finish, tag_finish, installed_finish, preview_finish, overwrite_toggle, tile_count, gen_hash, create_html, base_filter=None, progress=gr.Progress() if queue else None):
     global no_update
     proxies, ssl = _api.get_proxies()
     gl.scan_files = True
@@ -1045,7 +1057,7 @@ def file_scan(folders, ver_finish, tag_finish, installed_finish, preview_finish,
             if not_found_print:
                 print(f"model: \"{file_name}\" not found on CivitAI servers.")
         elif model_id is not None:
-            all_model_ids.append(f"&ids={model_id}")
+            all_model_ids.append(f"{model_id}")
             all_ids.append(model_id)
             all_version_ids.append(model_version_id)
             file_paths.append(file_path)
@@ -1071,10 +1083,10 @@ def file_scan(folders, ver_finish, tag_finish, installed_finish, preview_finish,
             yield lst[i:i + n]
 
     if not from_installed:
-        model_chunks = list(chunks(all_model_ids, 500))
+        model_chunks = list(chunks(all_model_ids, 100))
 
-        base_url = "https://civitai.com/api/v1/models?limit=100&nsfw=true"
-        url_list = [f"{base_url}{''.join(chunk)}" for chunk in model_chunks]
+        base_url = "https://civitai.red/api/v1/models?limit=100&nsfw=true"
+        url_list = [f"{base_url}&ids={','.join(chunk)}" for chunk in model_chunks]
 
         url_count = len(all_model_ids) // 100
         if len(all_model_ids) % 100 != 0:
@@ -1125,7 +1137,7 @@ def file_scan(folders, ver_finish, tag_finish, installed_finish, preview_finish,
         progress(1, desc="Processing final results...")
 
     if from_ver:
-        updated_models, outdated_models = version_match(file_paths, api_response)
+        updated_models, outdated_models = version_match(file_paths, api_response, base_filter)
 
         updated_set = set(updated_models)
         outdated_set = set(outdated_models)
@@ -1147,8 +1159,8 @@ def file_scan(folders, ver_finish, tag_finish, installed_finish, preview_finish,
 
     model_chunks = list(chunks(all_model_ids, tile_count))
 
-    base_url = "https://civitai.com/api/v1/models?limit=100&nsfw=true"
-    gl.url_list = {i + 1: f"{base_url}{''.join(chunk)}" for i, chunk in enumerate(model_chunks)}
+    base_url = "https://civitai.red/api/v1/models?limit=100&nsfw=true"
+    gl.url_list = {i + 1: f"{base_url}&ids={','.join(chunk)}" for i, chunk in enumerate(model_chunks)}
 
     if from_ver:
         gl.scan_files = False

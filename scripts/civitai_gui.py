@@ -155,7 +155,7 @@ def txt2img_output(image_url):
 
 
 def get_base_models():
-    api_url = 'https://civitai.com/api/v1/models?baseModels=INVALID_TRIGGER'  # Changed GetModels to INVALID_TRIGGER for because neither exist.
+    api_url = 'https://civitai.red/api/v1/models?baseModels=INVALID_TRIGGER'  # Changed GetModels to INVALID_TRIGGER for because neither exist.
     json_return = _api.request_civit_api(api_url, True)
     default_options = [
         "SDXL 1.0",
@@ -165,6 +165,7 @@ def get_base_models():
         "Flux.1 D",
         "Flux.1 Kontext",
         "NoobAI",
+        "Anima",
         "Wan Video",
         "Wan Video 1.3B t2v",
         "Wan Video 14B t2v",
@@ -507,7 +508,7 @@ def on_ui_tabs():
 
         civitai_text2img_input.change(fn=txt2img_output, inputs=civitai_text2img_input, outputs=civitai_text2img_output)
 
-        list_html_input.change(fn=all_visible, inputs=list_html, outputs=select_all)
+        list_html_input.change(fn=all_visible, inputs=list_html_input, outputs=select_all)
 
         def update_models_dropdown(input):
             if not gl.json_data:
@@ -808,7 +809,8 @@ def on_ui_tabs():
             overwrite_toggle,
             tile_count_slider,
             skip_hash_toggle,
-            do_html_gen
+            do_html_gen,
+            base_filter
         ]
 
         load_to_browser_inputs = [

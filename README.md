@@ -1,125 +1,155 @@
-**This fork has been made to merge in pending Pull Requests, and formatting changes will break compatibility. [Original repository](https://github.com/BlafKing/sd-civitai-browser-plus)**
+# CivitAI Browser+ (civitai.red edition)
 
-![CivitAI Browser-05+](https://github.com/BlafKing/sd-civitai-browser-plus/assets/9644716/95afcc41-56f0-4398-8779-51cb2a9e2f55)
+**A fork of [sd-civitai-browser-plus](https://github.com/BlafKing/sd-civitai-browser-plus), updated to keep working after Civitai's 2026 changes.**
+
+This fork is based on [nohupwork/sd-civitai-browser-plus](https://github.com/nohupwork/sd-civitai-browser-plus) (previously TheSlateGray's fork), which merged pending pull requests from the original project. Both upstream repositories are archived, so this fork carries the fixes needed for the current Civitai site and API.
+
+Made and tested for **Stable Diffusion WebUI Forge Neo**.
+
+![CivitAI Browser+](https://github.com/BlafKing/sd-civitai-browser-plus/assets/9644716/95afcc41-56f0-4398-8779-51cb2a9e2f55)
 
 ---
-### Extension for [Automatic1111's Stable Diffusion Web UI](https://github.com/AUTOMATIC1111/stable-diffusion-webui)
 
-<h1>Features 🚀</h1>
-<h3>Browse all models from CivitAI 🧩</h3>
+## What's new in this fork ✨
 
-* Explore a wide range of models at your fingertips.
+### civitai.red support 🔴
+In 2026 Civitai split into two sites: `civitai.com` is now SFW only, and the full catalogue moved to `civitai.red`. The original extension still queried `civitai.com`, so most models disappeared from searches and update scans.
 
-<h3>Check for updates and installed models 🔄</h3>
+* All API requests, model links and downloads now use `civitai.red`.
+* Pasting either a `civitai.com` or a `civitai.red` model link in the search box works.
 
-* Easily spot new updates and identify already installed models while browsing.
-* Ability to scan all installed models for available updates.
+### Smarter update detection 🔄
+The original update scan assumed that the first version listed on a model page is the newest one. On Civitai the creator chooses that order, so the scan often showed models as up to date when they weren't, or as outdated when they weren't. The scan now works like this:
 
-<h3>Download any Model, any version, and any file 📥</h3>
+1. It identifies the version you have installed by its SHA256 hash (with the version ID from the `.json` file as a fallback).
+2. It looks up the model on Civitai and reads the **publish date** of every version.
+3. A version counts as an update only if it was **published after the newest version you have** and its **base model is in your Base Model filter** (for example Pony, Illustrious and NoobAI).
 
-* Get the specific model version and file you need hassle-free.
-* Download queue to avoid waiting for finished downloads.
+So if you have the Pony version of a LoRA and the creator later publishes an Illustrious version, it shows up as an update only if Illustrious is in your filter. New versions for bases you don't use (Flux, Anima, Wan and so on) are ignored.
 
-<h3>Automatically assign tags to installed models 🏷️</h3>
+The orange and green glow on model cards follows the same rule, so the cards always agree with the scan.
 
-* Assign tags by scanning all installed models for automatic use in image generation.
+### Hides versions you can't download 🔒
+Updates are skipped when the newest version can't be downloaded for free:
 
-<h3>Quick Model Info Access 📊</h3>
+* **Early Access** versions (timed).
+* **Paid** versions sold with Buzz (Civitai's `paidAccess`, including permanent paid access).
+* **Site-only** versions, which the creator restricted to on-site generation (`usageControl: "Generation"`).
 
-* A button for each model card in txt2img and img2img to load it into the extension.
-* A button under each image in model info to send its generation info to txt2img.
+Paid and Early Access versions are controlled by the existing **"Hide early access models"** option. Site-only versions are always skipped, because they can never be downloaded.
 
-<h3>High-speed downloads with Aria2 🚄</h3>
+### Bulk updating works ✅
+* **Select All** now appears when you load the update results, so you can select every outdated model at once.
+* **Download all selected** now downloads the actual update version found by the scan. The original always downloaded the first version on the model page, which was often the version you already had, or one for a different base model.
+* If an Aria2 download fails, the extension retries the file with the standard downloader and prints Aria2's error message instead of a generic error.
+* The pause between queued downloads was reduced from 2 seconds to 0.5 seconds.
 
-* Maximize your bandwidth for lightning-fast downloads.
+### Download and scan log 📝
+Everything the extension prints to the console is also written to `scripts/civitai_browser.log`, including the HTTP status of each download link and errors that used to be silent. Lines older than 7 days are removed automatically when the WebUI starts.
 
-<h3>Sleek and Intuitive User Interface 🖌️</h3>
+### Security fixes 🛡️
+* **Aria2 RPC is no longer exposed to the network.** The original started Aria2 listening on all network interfaces with a hard-coded secret, so anyone on the same network could tell it to download files to any folder. It now listens on localhost only, with a random secret generated at every start.
+* **Download certificates are verified.** The original disabled TLS certificate checks in Aria2.
+* **Model names and descriptions from Civitai are sanitized** before being shown, so a malicious model name, version name or description can't run scripts in the WebUI.
+* **Safe zip extraction.** When "unpack zip" is enabled, zips containing paths outside the model folder are refused, and password-protected zips no longer freeze the WebUI waiting for a password in the console.
+* **A failed download only cleans up its own files.** The original searched every subfolder and permanently deleted any file with the same name, which could remove another model.
 
-* Enjoy a clutter-free, user-friendly interface, designed to enhance your experience.
+### Other fixes 🛠️
+* Every network request now has a timeout, so a server that stops responding can't freeze a download or scan.
+* Fixed a crash when using a proxy with a custom CA bundle.
+* Forge Neo: folder options given as lists are handled.
+* Fixed `400 Bad Request` errors when scanning many models: model IDs are now sent as a comma-separated list, as the API expects.
+* Fixed a startup crash when Civitai returns an empty response while loading the base model list.
+* Models whose local `.json` says "Model not found" are skipped instead of showing up as false updates.
 
-<h3>Actively maintained with feature requests welcome 🛠️</h3>
+---
 
-* Feel free to send me your feature requests, and I'll do my best to implement them!
+## How to use the update scan 🔍
 
-<h1></h1>
+1. Open the **CivitAI Browser+** tab and set the **Base model** filter to the bases you use. Save it as your default with **Save settings as default** if you like.
+2. Go to **Update Models** and click **Scan for available updates**.
+3. Click **Load outdated models to browser**. Outdated models have an orange glow.
+4. Click **Select All**, then **Download all selected**.
+5. Run the scan again: the models you downloaded disappear from the list.
 
-<details>
-<summary><h1>Known Issues 🐛</h1></summary>
+**Tip:** set your Civitai API key in **Settings → CivitAI Browser+**. Many models on `civitai.red` require it to download.
 
-<h3>Unable to download / Frozen download:</h3>
+---
 
-**If you're experiencing issues with broken or frozen downloads, there are two possible solutions you can try:**
+## Known limitations ⚠️
 
-1. **Revert to the old download method**:
-   A solution could be to disable the "Download models using Aria2" feature.  
-This will switch back to the old download method, which may resolve the issue.
+* **Variants count as updates.** Some creators publish different concepts or styles as "versions" of the same model (for example a color and a black-and-white version, or two different epochs). The API has no way to tell those apart from real updates, so a variant published later shows up as an update.
+* **Checking for site-only versions needs one extra API request** per update candidate. The requests run in parallel and are cached, but scans with many results take a few seconds longer.
+* When a model has several newer versions in your filter, **Download all selected** downloads only the newest one.
 
+### Unable to download / frozen download
+
+If downloads keep failing, check `scripts/civitai_browser.log` for the reason. You can also try:
+
+1. **Disable "Download models using Aria2"** to use the standard downloader.
    ![Revert to old download method](https://github.com/BlafKing/sd-civitai-browser-plus/assets/9644716/982b0ebb-0cac-4053-8060-285533e0e176)
-
-2. **Disable Async DNS for Aria2**:
-   If you're using a DNS manager program like PortMaster, try turning on the "Disable Async DNS for Aria2" option.
-
+2. **Enable "Disable Async DNS for Aria2"** if you use a DNS manager such as PortMaster.
    ![Disable Async DNS for Aria2](https://github.com/BlafKing/sd-civitai-browser-plus/assets/9644716/3cf7fab3-0df5-4995-9543-d9824b7931ff)
 
-These settings can be found under the "Settings" tab in Web-UI and then under the "CivitAI Browser+" tile.
-
-</details>
-
-<h1></h1>
-
-# How to install 📘
-
-<h3>Automatic Installation:</h3>
-
-![HowTo](https://github.com/BlafKing/sd-civitai-browser-plus/assets/9644716/91a8f636-0fd5-4964-8fb4-830a5c22254a)
-
-
-<h3>Manual Installation:</h3>
-
-1. Download the latest version from this site and unpack the .zip  
-![2023-09-25 13_06_31](https://github.com/BlafKing/sd-civitai-browser-plus/assets/9644716/12e46c6b-74b5-4ed5-bf55-cb76c5f75c62)
-
-2. Navigate to your extensions folder (Your SD folder/webui/extensions)
-3. Place the unpacked folder inside the extensions folder
-4. Restart SD-WebUI
-
-# Preview 👀
-
-https://github.com/BlafKing/sd-civitai-browser-plus/assets/9644716/44c5c7a0-4854-4043-bfbb-f32fa9df5a74
-
-# Changelog 📋
-
-<h3>2025-08-10</h3>
-* Moved `civitai_subfolders.json` out of Auto1111/Forge `config_states` folder into extension script folder. May break custom settings, please move your json file into `sd-civitai-browser-plus/scripts/civitai_subfolders.json`
+Both options are under **Settings → CivitAI Browser+**.
 
 ---
-<h3>v3.6.0</h3>
 
-* Feature: Ability to set custom default sub folders.
-* Feature: Automatically fetches latest available Basemodels.
-* Bug fix: Lag fixed on SD-WebUI Forge/Gradio 4+, thanks to [@BenjaminSymons](https://github.com/BenjaminSymons) and [@channelcat](https://github.com/channelcat)!
-* Bug fix: Version ID has been suffixed to filename to avoid detecting different models as installed.
-* Bug fix: Filename comparing to detect installed models is no longer case sensitive.
-* Bug fix: CivitAI button on model cards correctly works again.
-* Bug fix: Correct image path now gets used when local images in HTML are used.
-* Bug fix: Any trailing or leading spaces get removed from model/version names now.
+## Installation 📘
 
----
-<h3>v3.5.4</h3>
+### From the WebUI
+1. Go to **Extensions → Install from URL**.
+2. Paste the URL of this repository and click **Install**.
+3. Restart the WebUI.
 
-* Feature: Added support for DoRA (Requires SD-WebUI v1.9)
-* Bug fix: No longer rescans models that were previously not found on CivitAI
-* Bug fix: Fixed placement of HTML & api_info files when custom images location was used.
-* Bug fix: Fixed incorrect json naming.
+### Manual
+1. Download this repository as a `.zip` and unpack it.
+2. Place the folder inside your WebUI's `extensions` folder.
+3. If you already have another copy of CivitAI Browser+, remove or disable it, so the two don't conflict.
+4. Restart the WebUI completely. **Reload UI** is not enough for the extension's Python files.
 
 ---
-<h3>v1.0</h3>
 
-* Feature: 'Refresh' now reloads the current page unless any options have been changed.
-* Feature: Made the page refresh after a download and made it load during one.
-* Feature: Orange glow for any outdated installed packages.
-* Feature: 'Delete old version after download' option.
-* Feature: Ability to manually fill in a page number to load the corresponding page.
-* Cleanup: Removed new folder option.
-* Cleanup: Made the glow around frames always visible without hovering.
-* Pulled fork from: [SignalFlagZ's Fork](https://github.com/SignalFlagZ/sd-civitai-browser) [v1.1.0](https://github.com/SignalFlagZ/sd-civitai-browser/releases/tag/1.1.0)
+## Original features 🚀
+
+* Browse all models from Civitai.
+* See installed and outdated models while browsing, and scan all installed models for updates.
+* Download any model, version and file, with a download queue.
+* Automatically assign tags to installed models.
+* Load any model card from txt2img/img2img into the extension, and send an image's generation info to txt2img.
+* High-speed downloads with Aria2.
+
+---
+
+## Changelog 📋
+
+### 2026-11-19
+* Site-only versions (`usageControl: "Generation"`) are no longer offered as updates or downloaded.
+* Security review: Aria2 RPC restricted to localhost with a random secret, TLS verification enabled, HTML and JavaScript escaping of Civitai data, safe zip extraction, safer cleanup of failed downloads.
+* Stability: timeouts on all network requests, proxy CA bundle fix, Forge Neo folder options.
+* Speed: the site-only check runs in one parallel batch per scan or page.
+
+### 2026-11-04
+* Switched all API requests and links to `civitai.red`.
+* New update detection based on publish date and the Base Model filter.
+* Hide paid (`paidAccess`) and Early Access versions from updates.
+* Card colors follow the same update rule as the scan.
+* **Download all selected** downloads the version found by the scan.
+* **Select All** button visible when loading update results.
+* Aria2 error messages and automatic retry with the standard downloader.
+* Log file `scripts/civitai_browser.log` with 7-day retention.
+* Shorter pause between queued downloads.
+* Fixed `400` errors on bulk model lookups and a crash on empty API responses.
+
+### Earlier versions
+See the [original repository](https://github.com/BlafKing/sd-civitai-browser-plus) for the history up to v3.6.0.
+
+---
+
+## Credits 🙏
+
+* [BlafKing](https://github.com/BlafKing/sd-civitai-browser-plus): original CivitAI Browser+.
+* [SignalFlagZ](https://github.com/SignalFlagZ/sd-civitai-browser): the project CivitAI Browser+ was forked from.
+* [nohupwork (TheSlateGray)](https://github.com/nohupwork/sd-civitai-browser-plus): fork with merged pull requests that this version is based on.
+
+Licensed under the GNU AGPL v3, the same license as the original project (see [LICENSE](LICENSE)).
